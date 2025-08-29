@@ -1,0 +1,11 @@
+/src/config.php
+/backups/
+/data/*.sqlite*
+/.backup_manifest_*.txt
+/.well-known/
+/vendor/
+/.env
+*.pem
+*.key
+*.crt
+*.log
