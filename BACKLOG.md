@@ -42,6 +42,13 @@
    - **Tech**: Server-Sent Events (fallback till polling).
    - **Complexity**: M–L.
 
+6) **Generera bilder att använda för mer tittvänlig sida**
+   - **Generera med ChatGPT är tanken**
+   - **https://suno.com/s/6nPIln4MGBuKcPD7 har gjort några sånger **
+   - **https://suno.com/s/PYRir4vZP86LIAI4 här är en till**
+
+
+
 ## Senare (icebox)
 - **Pris per butik / valutor**
   - *Kunna ange butik eller valuta per lista.*  
