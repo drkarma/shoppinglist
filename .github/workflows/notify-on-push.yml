@@ -24,6 +24,7 @@ jobs:
               core.setFailed('Missing secret DISCORD_WEBHOOK_URL');
               return;
             }
+
             const mention = process.env.DISCORD_MENTION || '';
             const owner = context.repo.owner;
             const repo  = context.repo.repo;
@@ -31,7 +32,7 @@ jobs:
             const before = context.payload.before;
             const after  = context.sha;
 
-            // First push (before == zero SHA) -> compare against parent of after if possible
+            // Hantera första push (before == zero SHA): jämför mot parent om möjligt
             const zero = '0000000000000000000000000000000000000000';
             let base = before;
             if (before === zero) {
@@ -42,25 +43,25 @@ jobs:
               } catch { base = after; }
             }
 
-            // Compare via GitHub API
+            // Hämta compare-data via GitHub API
             const cmp = await github.rest.repos.compareCommits({owner, repo, base, head: after});
 
             // Commits (latest → oldest)
             const commits = (cmp.data.commits || [])
               .reverse()
-              .map(c => `- ${c.sha.slice(0,7)} — ${c.commit.message.split('\\n')[0]}`)
-              .join('\\n') || '- (none)';
+              .map(c => `- ${c.sha.slice(0,7)} — ${c.commit.message.split('\n')[0]}`)
+              .join('\n') || '- (none)';
 
-            // Files grouped
+            // Filer grupperade
             const files = cmp.data.files || [];
-            const group = (status) => {
-              const map = {added:'added', modified:'modified', removed:'removed', renamed:'renamed'};
+            const listBy = (status) => {
+              const map = { added: 'added', modified: 'modified', removed: 'removed', renamed: 'renamed' };
               const arr = files.filter(f => f.status === map[status]).map(f => `- ${f.filename}`);
-              return arr.length ? arr.join('\\n') : '- (none)';
+              return arr.length ? arr.join('\n') : '- (none)';
             };
-            const added    = group('added');
-            const modified = group('modified');
-            const deleted  = group('removed');
+            const added    = listBy('added');
+            const modified = listBy('modified');
+            const deleted  = listBy('removed');
 
             const compareUrl = `https://github.com/${owner}/${repo}/compare/${base}...${after}`;
 
@@ -84,14 +85,15 @@ ${deleted}
 
             // Discord content limit ~2000 chars
             if (content.length > 1800) {
-              content = content.slice(0, 1750) + '\\n\\n_(truncated)_\\n' + compareUrl;
+              content = content.slice(0, 1750) + '\n\n_(truncated)_\n' + compareUrl;
             }
 
-            const res = await fetch(webhook, {
+            const res = await fetch(process.env.DISCORD_WEBHOOK_URL, {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({ username: 'Shopylist CI', content })
             });
+
             if (!res.ok) {
               const msg = await res.text();
               core.setFailed(`Discord webhook failed: ${res.status} ${res.statusText} – ${msg}`);
