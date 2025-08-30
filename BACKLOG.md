@@ -44,8 +44,11 @@
 
 6) **Generera bilder att använda för mer tittvänlig sida**
    - **Generera med ChatGPT är tanken**
+
+7) **Möjlighet att använda någon typ av jingel för sidan**
    - **https://suno.com/s/6nPIln4MGBuKcPD7 har gjort några sånger **
    - **https://suno.com/s/PYRir4vZP86LIAI4 här är en till**
+   - **https://suno.com/s/rI7ldessycSqFbTi**
 
 
 
