@@ -9,3 +9,4 @@
 *.key
 *.crt
 *.log
+/report.md

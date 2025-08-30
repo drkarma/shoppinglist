@@ -1,0 +1,108 @@
+name: Notify on push (Discord)
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Build report
+        id: report
+        run: |
+          set -euo pipefail
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # Hantera första push (before = zero SHA)
+          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            BEFORE="$(git rev-parse "${AFTER}^" || echo "$AFTER")"
+          fi
+
+          echo "BEFORE=$BEFORE" >> "$GITHUB_OUTPUT"
+          echo "AFTER=$AFTER"   >> "$GITHUB_OUTPUT"
+
+          # Commits (senaste först)
+          COMMITS=$(git log --pretty=format:'- %h — %s' "${BEFORE}..${AFTER}" || true)
+          [[ -z "$COMMITS" ]] && COMMITS="- (no commit messages found)"
+
+          # Filändringar grupperat
+          DIFF=$(git diff --name-status "$BEFORE" "$AFTER" || true)
+          ADDED=$(echo "$DIFF" | awk '$1=="A"{print "- "$2}' || true)
+          MODIFIED=$(echo "$DIFF" | awk '$1=="M"{print "- "$2}' || true)
+          DELETED=$(echo "$DIFF" | awk '$1=="D"{print "- "$2}' || true)
+          [[ -z "$ADDED" ]] && ADDED="- (none)"
+          [[ -z "$MODIFIED" ]] && MODIFIED="- (none)"
+          [[ -z "$DELETED" ]] && DELETED="- (none)"
+
+          COMPARE_URL="https://github.com/${{ github.repository }}/compare/${BEFORE}...${AFTER}"
+
+          {
+            echo "commits<<'EOF'"
+            echo "$COMMITS"
+            echo "EOF"
+            echo "ADDED<<'EOF'"
+            echo "$ADDED"
+            echo "EOF"
+            echo "MODIFIED<<'EOF'"
+            echo "$MODIFIED"
+            echo "EOF"
+            echo "DELETED<<'EOF'"
+            echo "$DELETED"
+            echo "EOF"
+            echo "compare_url=$COMPARE_URL"
+          } >> "$GITHUB_OUTPUT"
+
+          # Bygg en markdown-rapport (sparas i report.md)
+          {
+            echo "*Repo:* ${{ github.repository }}"
+            echo "*Branch:* ${{ github.ref_name }}"
+            echo
+            echo "*Commits (latest → oldest):*"
+            echo "$COMMITS"
+            echo
+            echo "*Files changed:*"
+            echo "• *Added*:"
+            echo "$ADDED"
+            echo "• *Modified*:"
+            echo "$MODIFIED"
+            echo "• *Deleted*:"
+            echo "$DELETED"
+            echo
+            echo "*Compare:* $COMPARE_URL"
+          } > report.md
+
+          # Trimma ner för Discords content-limit (2,000 chars) om det behövs
+          LEN=$(wc -c < report.md)
+          if [ "$LEN" -gt 1800 ]; then
+            echo -e "\n\n_(truncated)_\n$COMPARE_URL" >> report.md
+          fi
+
+      - name: Send to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION: ${{ secrets.DISCORD_MENTION }}
+        run: |
+          set -e
+          if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+            echo "Discord not configured (missing secret DISCORD_WEBHOOK_URL). Skipping."
+            exit 0
+          fi
+
+          PREFIX="${DISCORD_MENTION:-}"
+          BODY="$(cat report.md)"
+          CONTENT="$(printf '%s\n%s' "$PREFIX" "$BODY")"
+
+          # Skicka som plain text content
+          printf '%s' "$CONTENT" | jq -Rs '{username:"Shopylist CI", content: .}' > payload.json
+          curl -fsS -H "Content-Type: application/json" -d @payload.json "$DISCORD_WEBHOOK_URL"
