@@ -45,7 +45,7 @@ jobs:
               }
             }
 
-            // Hämta compare-data via GitHub API
+            // Hämta compare-data via GitHub API -
             const cmp = await github.rest.repos.compareCommits({owner, repo, base, head: after});
 
             // Commits (latest → oldest)
