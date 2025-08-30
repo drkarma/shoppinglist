@@ -3,6 +3,7 @@ name: Notify on push (Discord)
 on:
   push:
     branches: [ master ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,20 +19,14 @@ jobs:
           DISCORD_MENTION: ${{ secrets.DISCORD_MENTION }} # optional: <@userId> or <@&roleId>
         with:
           script: |
-            const core = require('@actions/core');
-
             const webhook = process.env.DISCORD_WEBHOOK_URL;
-            if (!webhook) {
-              core.setFailed('Missing secret DISCORD_WEBHOOK_URL');
-              return;
-            }
+            if (!webhook) throw new Error('Missing secret DISCORD_WEBHOOK_URL');
 
             const mention = process.env.DISCORD_MENTION || '';
-            const owner   = context.repo.owner;
-            const repo    = context.repo.repo;
-            const branch  = context.ref.replace('refs/heads/','');
-            const before  = context.payload.before;
-            const after   = context.sha;
+            const {owner, repo} = context.repo;
+            const branch = (context.ref || '').replace('refs/heads/','');
+            const before = context.payload.before;
+            const after  = context.sha;
 
             // Första pushen (before = zero SHA): jämför mot parent om möjligt
             const zero = '0000000000000000000000000000000000000000';
@@ -45,16 +40,16 @@ jobs:
               }
             }
 
-            // Hämta compare-data via GitHub API -
+            // Compare via GitHub API
             const cmp = await github.rest.repos.compareCommits({owner, repo, base, head: after});
 
-            // Commits (latest → oldest)
+            // Commitmeddelanden (senaste → äldsta)
             const commits = (cmp.data.commits || [])
               .reverse()
               .map(c => `- ${c.sha.slice(0,7)} — ${c.commit.message.split('\n')[0]}`)
               .join('\n') || '- (none)';
 
-            // Filer grupperade
+            // Filer grupperat
             const files = cmp.data.files || [];
             const listBy = (status) => {
               const arr = files.filter(f => f.status === status).map(f => `- ${f.filename}`);
@@ -66,7 +61,7 @@ jobs:
 
             const compareUrl = `https://github.com/${owner}/${repo}/compare/${base}...${after}`;
 
-            // Bygg Discord-innehåll rad för rad (robust mot YAML)
+            // Bygg Discord-innehåll radvis (robust mot YAML/backticks)
             const lines = [
               mention ? `${mention}` : '',
               `*Repo:* ${owner}/${repo}`,
@@ -87,7 +82,7 @@ jobs:
             ].filter(Boolean);
             let content = lines.join('\n');
 
-            // Discord content limit ~2000 chars
+            // Discord content-limit ~2000 chars
             if (content.length > 1800) {
               content = content.slice(0, 1750) + '\n\n_(truncated)_\n' + compareUrl;
             }
@@ -99,5 +94,5 @@ jobs:
             });
             if (!res.ok) {
               const msg = await res.text();
-              core.setFailed(`Discord webhook failed: ${res.status} ${res.statusText} – ${msg}`);
+              throw new Error(`Discord webhook failed: ${res.status} ${res.statusText} – ${msg}`);
             }
