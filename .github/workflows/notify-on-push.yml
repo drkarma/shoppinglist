@@ -4,105 +4,95 @@ on:
   push:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Build report
-        id: report
-        run: |
-          set -euo pipefail
-
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-
-          # Hantera första push (before = zero SHA)
-          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            BEFORE="$(git rev-parse "${AFTER}^" || echo "$AFTER")"
-          fi
-
-          echo "BEFORE=$BEFORE" >> "$GITHUB_OUTPUT"
-          echo "AFTER=$AFTER"   >> "$GITHUB_OUTPUT"
-
-          # Commits (senaste först)
-          COMMITS=$(git log --pretty=format:'- %h — %s' "${BEFORE}..${AFTER}" || true)
-          [[ -z "$COMMITS" ]] && COMMITS="- (no commit messages found)"
-
-          # Filändringar grupperat
-          DIFF=$(git diff --name-status "$BEFORE" "$AFTER" || true)
-          ADDED=$(echo "$DIFF" | awk '$1=="A"{print "- "$2}' || true)
-          MODIFIED=$(echo "$DIFF" | awk '$1=="M"{print "- "$2}' || true)
-          DELETED=$(echo "$DIFF" | awk '$1=="D"{print "- "$2}' || true)
-          [[ -z "$ADDED" ]] && ADDED="- (none)"
-          [[ -z "$MODIFIED" ]] && MODIFIED="- (none)"
-          [[ -z "$DELETED" ]] && DELETED="- (none)"
-
-          COMPARE_URL="https://github.com/${{ github.repository }}/compare/${BEFORE}...${AFTER}"
-
-          {
-            echo "commits<<'EOF'"
-            echo "$COMMITS"
-            echo "EOF"
-            echo "ADDED<<'EOF'"
-            echo "$ADDED"
-            echo "EOF"
-            echo "MODIFIED<<'EOF'"
-            echo "$MODIFIED"
-            echo "EOF"
-            echo "DELETED<<'EOF'"
-            echo "$DELETED"
-            echo "EOF"
-            echo "compare_url=$COMPARE_URL"
-          } >> "$GITHUB_OUTPUT"
-
-          # Bygg en markdown-rapport (sparas i report.md)
-          {
-            echo "*Repo:* ${{ github.repository }}"
-            echo "*Branch:* ${{ github.ref_name }}"
-            echo
-            echo "*Commits (latest → oldest):*"
-            echo "$COMMITS"
-            echo
-            echo "*Files changed:*"
-            echo "• *Added*:"
-            echo "$ADDED"
-            echo "• *Modified*:"
-            echo "$MODIFIED"
-            echo "• *Deleted*:"
-            echo "$DELETED"
-            echo
-            echo "*Compare:* $COMPARE_URL"
-          } > report.md
-
-          # Trimma ner för Discords content-limit (2,000 chars) om det behövs
-          LEN=$(wc -c < report.md)
-          if [ "$LEN" -gt 1800 ]; then
-            echo -e "\n\n_(truncated)_\n$COMPARE_URL" >> report.md
-          fi
-
-      - name: Send to Discord
+      - name: Build and send report to Discord
+        uses: actions/github-script@v7
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISCORD_MENTION: ${{ secrets.DISCORD_MENTION }}
-        run: |
-          set -e
-          if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
-            echo "Discord not configured (missing secret DISCORD_WEBHOOK_URL). Skipping."
-            exit 0
-          fi
+          DISCORD_MENTION: ${{ secrets.DISCORD_MENTION }} # optional: <@userId> or <@&roleId>
+        with:
+          script: |
+            const core = require('@actions/core');
+            const webhook = process.env.DISCORD_WEBHOOK_URL;
+            if (!webhook) {
+              core.setFailed('Missing secret DISCORD_WEBHOOK_URL');
+              return;
+            }
+            const mention = process.env.DISCORD_MENTION || '';
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const branch = context.ref.replace('refs/heads/','');
+            const before = context.payload.before;
+            const after  = context.sha;
 
-          PREFIX="${DISCORD_MENTION:-}"
-          BODY="$(cat report.md)"
-          CONTENT="$(printf '%s\n%s' "$PREFIX" "$BODY")"
+            // First push (before == zero SHA) -> compare against parent of after if possible
+            const zero = '0000000000000000000000000000000000000000';
+            let base = before;
+            if (before === zero) {
+              try {
+                const {data: commit} = await github.rest.repos.getCommit({owner, repo, ref: after});
+                if (commit.parents && commit.parents[0]) base = commit.parents[0].sha;
+                else base = after;
+              } catch { base = after; }
+            }
 
-          # Skicka som plain text content
-          printf '%s' "$CONTENT" | jq -Rs '{username:"Shopylist CI", content: .}' > payload.json
-          curl -fsS -H "Content-Type: application/json" -d @payload.json "$DISCORD_WEBHOOK_URL"
+            // Compare via GitHub API
+            const cmp = await github.rest.repos.compareCommits({owner, repo, base, head: after});
+
+            // Commits (latest → oldest)
+            const commits = (cmp.data.commits || [])
+              .reverse()
+              .map(c => `- ${c.sha.slice(0,7)} — ${c.commit.message.split('\\n')[0]}`)
+              .join('\\n') || '- (none)';
+
+            // Files grouped
+            const files = cmp.data.files || [];
+            const group = (status) => {
+              const map = {added:'added', modified:'modified', removed:'removed', renamed:'renamed'};
+              const arr = files.filter(f => f.status === map[status]).map(f => `- ${f.filename}`);
+              return arr.length ? arr.join('\\n') : '- (none)';
+            };
+            const added    = group('added');
+            const modified = group('modified');
+            const deleted  = group('removed');
+
+            const compareUrl = `https://github.com/${owner}/${repo}/compare/${base}...${after}`;
+
+            let content = `${mention}
+*Repo:* ${owner}/${repo}
+*Branch:* ${branch}
+
+*Commits (latest → oldest):*
+${commits}
+
+*Files changed:*
+• *Added:*
+${added}
+• *Modified:*
+${modified}
+• *Deleted:*
+${deleted}
+
+*Compare:* ${compareUrl}
+`;
+
+            // Discord content limit ~2000 chars
+            if (content.length > 1800) {
+              content = content.slice(0, 1750) + '\\n\\n_(truncated)_\\n' + compareUrl;
+            }
+
+            const res = await fetch(webhook, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ username: 'Shopylist CI', content })
+            });
+            if (!res.ok) {
+              const msg = await res.text();
+              core.setFailed(`Discord webhook failed: ${res.status} ${res.statusText} – ${msg}`);
+            }
